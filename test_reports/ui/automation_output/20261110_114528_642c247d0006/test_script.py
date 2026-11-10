@@ -1,0 +1,30 @@
+async def run_test(page, output_dir, page_url):
+    try:
+        await page.set_viewport_size({"width": 390, "height": 844})
+        await page.wait_for_timeout(1200)
+        if await page.get_by_text('Acessar workspace', exact=True).is_visible():
+            await page.fill('input[placeholder="E-mail corporativo"]', 'debug-blue@example.com')
+            await page.fill('input[placeholder^="Senha"]', 'BlueTeam123!')
+            await page.get_by_text('Acessar workspace', exact=True).click(force=True)
+            await page.wait_for_timeout(1800)
+        await page.get_by_text('Registrar incidente', exact=True).first.click(force=True)
+        await page.fill('input[placeholder="Título do alerta"]', 'TEST UI incident')
+        await page.fill('textarea[placeholder="Descrição e contexto"]', 'TEST suspicious activity')
+        await page.fill('textarea[placeholder^="Cole os logs"]', 'TEST severity=warning')
+        await page.get_by_text('Abrir triagem', exact=True).click(force=True)
+        await page.wait_for_timeout(1200)
+        print('Triage heading:', await page.get_by_text('Triagem operacional', exact=True).is_visible())
+        print('Analyze action:', await page.get_by_text('Analisar', exact=True).is_visible())
+        await page.get_by_text('Playbook', exact=True).click(force=True)
+        print('Checklist item:', await page.get_by_text('Conter o vetor ou ativo afetado', exact=True).is_visible())
+        await page.get_by_text('Conter o vetor ou ativo afetado', exact=True).click(force=True)
+        await page.get_by_text('menu-open', exact=False).click(force=True)
+        await page.wait_for_timeout(300)
+        print('Drawer AI:', await page.get_by_text('Perguntar à IA', exact=True).is_visible())
+        await page.get_by_text('Preferências', exact=True).click(force=True)
+        await page.wait_for_timeout(300)
+        print('Theme setting:', await page.get_by_text('Modo escuro SOC', exact=True).is_visible())
+        await page.screenshot(path='/app/test_reports/ui/automation_output/20261110_114528_642c247d0006/triage_drawer.jpeg', type="jpeg", quality=40, full_page=False)
+    except Exception as e:
+        print(f'FINDING: extended mobile flow failed: {e}')
+        raise

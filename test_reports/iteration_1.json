@@ -1,0 +1,52 @@
+{
+  "summary": "Backend CRUD/auth/AI regression and mobile Expo preview were tested. Core auth, workspace, incident, checklist, evidence, review, library, history, and AI analysis passed; public health routing and UI testability issues remain.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "/health",
+        "issue": "Public preview URL returns the Expo HTML shell (200 text/html), not the backend JSON health response. /api/health is 404, so the health endpoint is not externally verifiable through the configured ingress.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {
+        "component": "frontend/app/index.tsx",
+        "issue": "Interactive controls have no testID attributes, preventing robust automation and violating the required Expo testability contract."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_regression_iteration.py",
+    "/app/test_reports/pytest/pytest_results.xml",
+    "/app/test_reports/ui/initial.png",
+    "/app/test_reports/ui/workspace.png"
+  ],
+  "action_items": [
+    "Expose backend health through the public /api-prefixed ingress (or configure the ingress exception) and verify JSON status externally.",
+    "Add stable testID attributes to auth fields/buttons, navigation, drawer links, modal fields, triage actions, checklist items, and theme switch.",
+    "Retest the full mobile incident flow after testIDs are added; the current modal action was difficult to target because the product has no stable selectors."
+  ],
+  "critical_code_review_comments": [
+    "Frontend API URL uses EXPO_PUBLIC_BACKEND_URL while the stated environment contract names EXPO_BACKEND_URL; current preview works only because the public variant is present.",
+    "SSO/Google is intentionally a non-functional alert placeholder, as documented, and is not a backend integration."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_regression_iteration.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "success_rate": {
+    "backend": "75% (3/4 pytest tests; health assertion failed due to public routing)",
+    "frontend": "75% (preview/auth/workspace/modal passed; extended flow was blocked by selector/viewport targeting)"
+  },
+  "seed_data_creation": "Created TEST_ prefixed preview users and incidents during regression tests; no seeded or existing records were modified.",
+  "retest_needed": true,
+  "should_call_test_agent_after_fix": true,
+  "context_for_next_testing_agent": "AI analysis returned classification, confidence, findings, report draft, and requires_manual_review successfully. Public /health returned HTML; /api/health returned 404. Preview loaded in 390x844 dark mode and email login/workspace/create modal worked.",
+  "rca_of_issue": "Ingress routes frontend paths without /api to Expo, while FastAPI defines health only at root /health. Therefore the configured public URL's /health is intercepted by the frontend and /api/health has no matching route. The frontend's missing testIDs makes modal and nested workflow automation fragile."
+}

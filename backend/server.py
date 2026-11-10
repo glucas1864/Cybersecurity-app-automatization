@@ -46,6 +46,10 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("id", ASCENDING)], name="analysis_history_id", unique=True),
         IndexModel([("owner_id", ASCENDING), ("created_at", DESCENDING)], name="analysis_history_owner_date"),
     ],
+    "ioc_lookups": [
+        IndexModel([("id", ASCENDING)], name="ioc_lookup_id", unique=True),
+        IndexModel([("owner_id", ASCENDING), ("created_at", DESCENDING)], name="ioc_owner_date"),
+    ],
 }
 
 
@@ -128,6 +132,11 @@ class ChatRequest(BaseModel):
     incident_context: Optional[str] = None
 
 
+class IocRequest(BaseModel):
+    indicator: str = Field(min_length=2, max_length=400)
+    notes: Optional[str] = None
+
+
 JWT_SECRET = os.getenv("JWT_SECRET", "soc-sentinel-local-secret-change-me-32")
 JWT_ALGORITHM = "HS256"
 AI_MODEL = "gpt-5.6-terra"
@@ -169,7 +178,9 @@ def incident_payload(title: str, source: str, description: str, raw_logs: str, u
         "severity_label": "Revisar",
         "analysis": None,
         "report": "",
+        "report_draft": "",
         "report_reviewed": False,
+        "reviewed_at": None,
         "checklist": [
             {"id": "contain", "label": "Conter o vetor ou ativo afetado", "done": False},
             {"id": "scope", "label": "Delimitar escopo e linha do tempo", "done": False},
@@ -274,6 +285,11 @@ async def root():
     return {"message": "SOC Sentinel Blue API", "ai_model": AI_MODEL}
 
 
+@api_router.get("/health")
+async def api_health():
+    return {"status": "ok"}
+
+
 @api_router.post("/auth/register", response_model=AuthResponse)
 async def register(input: AuthRequest):
     email = input.email.strip().lower()
@@ -333,16 +349,17 @@ async def analyze_incident(incident_id: str, request: AnalysisRequest, user: dic
     result = await run_ai_analysis(incident, request)
     now = datetime.now(timezone.utc).isoformat()
     await db.analysis_history.insert_one({"id": str(uuid.uuid4()), "owner_id": user["id"], "incident_id": incident_id, "incident_title": incident["title"], "created_at": now, "context": request.context, "analysis": result})
-    await db.incidents.update_one({"id": incident_id}, {"$set": {"analysis": result, "report": result.get("report_draft", ""), "severity": result["classification"], "severity_label": result["classification_label"], "updated_at": now}})
+    await db.incidents.update_one({"id": incident_id}, {"$set": {"analysis": result, "report": result.get("report_draft", ""), "report_draft": result.get("report_draft", ""), "severity": result["classification"], "severity_label": result["classification_label"], "report_reviewed": False, "reviewed_at": None, "updated_at": now}})
     return {"incident_id": incident_id, **result, "requires_manual_review": True}
 
 
 @api_router.post("/incidents/{incident_id}/review")
 async def review_incident(incident_id: str, request: ReviewRequest, user: dict[str, Any] = Depends(current_user)):
-    result = await db.incidents.update_one({"id": incident_id, "owner_id": user["id"]}, {"$set": {"report": request.report, "report_reviewed": True, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    now = datetime.now(timezone.utc).isoformat()
+    result = await db.incidents.update_one({"id": incident_id, "owner_id": user["id"]}, {"$set": {"report": request.report, "report_reviewed": True, "reviewed_at": now, "updated_at": now}})
     if not result.matched_count:
         raise HTTPException(status_code=404, detail="Incidente não encontrado")
-    return {"ok": True, "report_reviewed": True}
+    return {"ok": True, "report_reviewed": True, "reviewed_at": now}
 
 
 @api_router.post("/incidents/{incident_id}/checklist/{item_id}")
@@ -380,6 +397,72 @@ async def ask_ai(request: ChatRequest, user: dict[str, Any] = Depends(current_us
 @api_router.get("/analysis-history")
 async def analysis_history(user: dict[str, Any] = Depends(current_user)):
     return await db.analysis_history.find({"owner_id": user["id"]}, {"_id": 0}).sort("created_at", -1).limit(100).to_list(100)
+
+
+IOC_PATTERNS = [
+    ("ipv4", re.compile(r"^(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d?\d)$")),
+    ("sha256", re.compile(r"^[A-Fa-f0-9]{64}$")),
+    ("sha1", re.compile(r"^[A-Fa-f0-9]{40}$")),
+    ("md5", re.compile(r"^[A-Fa-f0-9]{32}$")),
+    ("email", re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")),
+    ("url", re.compile(r"^https?://\S+$", re.IGNORECASE)),
+    ("domain", re.compile(r"^(?=.{4,253}$)(?!-)[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+$")),
+]
+
+
+def classify_ioc(value: str) -> str:
+    cleaned = value.strip().replace("[.]", ".").replace("(.)", ".")
+    for kind, pattern in IOC_PATTERNS:
+        if pattern.match(cleaned):
+            return kind
+    return "unknown"
+
+
+async def run_ioc_lookup(indicator: str, ioc_type: str, notes: Optional[str]) -> dict[str, Any]:
+    api_key = configured_ai_key()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="Agente de IA não configurado")
+    prompt = llm_safe_text(f"""Avalie o indicador de comprometimento abaixo para um analista blue team.
+Retorne SOMENTE JSON valido com as chaves: classification (green|yellow|red), classification_label, confidence (0-100), summary, hypotheses (array de strings), recommended_checks (array de strings), enrichment_sources (array de strings).
+Nunca prometa certeza absoluta; destaque hipoteses e passos de validacao.
+Tipo detectado: {ioc_type}
+Indicador: {indicator}
+Notas do analista: {notes or 'nenhuma'}""")
+    chat = LlmChat(api_key=api_key, session_id=f"ioc-{uuid.uuid4()}", system_message="You are a SOC analyst assistant that helps triage IOCs without inventing evidence.").with_model("openai", AI_MODEL)
+    answer = []
+    async for event in chat.stream_message(UserMessage(text=prompt)):
+        if isinstance(event, TextDelta):
+            answer.append(event.content)
+        elif isinstance(event, StreamDone):
+            break
+    result = extract_json("".join(answer))
+    classification = str(result.get("classification", "yellow")).lower()
+    if classification not in {"green", "yellow", "red"}:
+        classification = "yellow"
+    result["classification"] = classification
+    result["classification_label"] = result.get("classification_label") or {"green": "Baixo risco", "yellow": "Investigar", "red": "Alto risco"}[classification]
+    result["confidence"] = max(0, min(100, int(result.get("confidence", 50))))
+    for key in ("hypotheses", "recommended_checks", "enrichment_sources"):
+        result[key] = result.get(key) if isinstance(result.get(key), list) else []
+    return result
+
+
+@api_router.post("/ioc/lookup")
+async def ioc_lookup(request: IocRequest, user: dict[str, Any] = Depends(current_user)):
+    cleaned = request.indicator.strip().replace("[.]", ".").replace("(.)", ".")
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Informe um indicador")
+    ioc_type = classify_ioc(cleaned)
+    result = await run_ioc_lookup(cleaned, ioc_type, request.notes)
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {"id": str(uuid.uuid4()), "owner_id": user["id"], "indicator": cleaned, "ioc_type": ioc_type, "notes": request.notes or "", "result": result, "created_at": now}
+    await db.ioc_lookups.insert_one({**doc})
+    return {"indicator": cleaned, "ioc_type": ioc_type, "created_at": now, "requires_manual_review": True, **result}
+
+
+@api_router.get("/ioc/history")
+async def ioc_history(user: dict[str, Any] = Depends(current_user)):
+    return await db.ioc_lookups.find({"owner_id": user["id"]}, {"_id": 0}).sort("created_at", -1).limit(50).to_list(50)
 
 @api_router.post("/status", response_model=StatusCheck)
 async def create_status_check(input: StatusCheckCreate):

@@ -1,0 +1,28 @@
+{
+  "summary": "Only the backend was tested, and only the recent changes. 13/13 pytest tests passed against the public URL with the real LLM (no mocks). POST /api/ioc/lookup: ipv4, sha256 and the defanged domain malicioso[.]com (cleaned to malicioso.com, type domain) all return the full schema with requires_manual_review=true. GET /api/ioc/history: newest first, only the logged-in user's lookups, no _id. Review returns reviewed_at (ISO UTC) and keeps report_draft. A new analysis sets report_draft equal to report and resets report_reviewed=false and reviewed_at=null. Regression on /api/health and /api/auth/login: OK.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/ioc/lookup, POST /api/incidents/{id}/analyze", "issue": "int(result.get('confidence', 50)) has no exception handling. If the LLM returns confidence as a non-numeric string (e.g. '85%' or 'alta'), the request fails with a 500. Not reproduced in this run."},
+      {"endpoint": "POST /api/ioc/lookup", "issue": "Unrecognized indicators (ioc_type='unknown') still call the LLM. They are not rejected with a 400 (design choice; worth confirming)."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": [], "react_native_issues": []},
+  "test_report_links": ["/app/backend/tests/test_ioc_and_review.py", "/app/test_reports/pytest/pytest_iteration_2.xml"],
+  "action_items": [
+    "Make the confidence parsing robust (try/except or strip non-numeric characters, falling back to 50) in run_ai_analysis and run_ioc_lookup.",
+    "Optional: reject ioc_type='unknown' with a 400, or make it explicit in the response, to avoid unnecessary LLM calls."
+  ],
+  "critical_code_review_comments": [
+    "Duplicated code: run_ioc_lookup and run_ai_analysis repeat the stream and normalization blocks (classification/confidence/lists). Extract a helper.",
+    "JWT_SECRET has a hardcoded default value in server.py:140. It should come only from env (fail fast).",
+    "AI_MODEL is hardcoded in server.py:142 instead of being read from env."
+  ],
+  "updated_files": ["/app/backend/tests/test_ioc_and_review.py"],
+  "success_rate": {"backend": "100% (13/13)", "frontend": "not tested"},
+  "seed_data_creation": "Created 2 users (TEST_*@example.com) with 1 incident and 3 IOC lookups. debug-blue@example.com already existed (login OK) and was not modified.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The env var is EXPO_PUBLIC_BACKEND_URL (frontend/.env). Run: export EXPO_PUBLIC_BACKEND_URL=... && pytest backend/tests/test_ioc_and_review.py. LLM calls take about 5-15s each. /api/health now responds with JSON (the issue from iteration 1 is resolved).",
+  "rca_of_issue": ""
+}
