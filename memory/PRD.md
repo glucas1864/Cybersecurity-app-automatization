@@ -44,3 +44,4 @@ Aplicativo móvel para analistas de cyber segurança (blue team), com triagem op
 - Checklist items store done_at; timeline shows one event per completed step at its real time; created event uses initial_severity
 - IOC: case-insensitive hxxp + dedup (domains/hashes/emails/URL host), 999.1.1.1 no longer a domain, IPv6 support, 400-char per-item limit, safe_int everywhere, semaphore(4) on enrichment, deterministic batch order (batch_index)
 - Checklist unknown item -> 404
+- JWT_SECRET moved to backend/.env (no hardcoded fallback; server refuses to start without it)

@@ -1,0 +1,25 @@
+{
+  "summary": "Backend-only test of the JWT secret hardening. All 36 tests pass: 19 new tests in test_jwt_secret_hardening.py plus the 17-test regression suite test_batch_ioc_and_timeline.py. server.py reads JWT_SECRET from env with an empty default and raises RuntimeError at import if it is missing or under 32 characters. A subprocess import with JWT_SECRET='' or a short value confirmed the fail-fast. The backend starts normally with the 64-char secret in backend/.env. Register, login and /auth/me work. Tokens forged with the old 'soc-sentinel-local-secret-change-me-32' secret get 401 on /auth/me and /incidents, as do alg=none, tampered-signature, garbage, expired, non-Bearer and missing tokens. GET/POST /incidents, /incidents/{id}/timeline and /ioc/lookup/batch work with a valid token and return 401 without one. LLM endpoints were not tested in depth.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "git history", "issue": "The old secret string 'soc-sentinel-local-secret-change-me-32' still exists in git history (commit a2254ca). The secret has been rotated and tokens signed with it are rejected, so it is no longer exploitable. Rewriting history before publishing is optional. backend/.env is gitignored and was never committed. No EMERGENT_LLM_KEY, Mongo URL or JWT_SECRET value appears in history."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": [], "react_native_issues": []},
+  "test_report_links": ["/app/backend/tests/test_jwt_secret_hardening.py", "/app/backend/tests/test_batch_ioc_and_timeline.py", "/app/test_reports/pytest/pytest_results_iter4.xml"],
+  "action_items": [
+    "Optional: before publishing the repo, consider squashing or rewriting the history that contains the old default secret (it is already rotated, so this is cosmetic).",
+    "Optional: test_batch_ioc_and_timeline.py uses a class-scoped fixture defined as an instance method, which triggers a PytestRemovedIn10Warning. Add @classmethod."
+  ],
+  "critical_code_review_comments": [
+    "JWT handling is correct: HS256 is pinned via algorithms=[JWT_ALGORITHM] (alg=none is rejected), exp is enforced, and failures return 401 without leaking details.",
+    "Tokens expire after 7 days and there is no revocation or refresh mechanism. This is acceptable for an MVP."
+  ],
+  "updated_files": ["/app/backend/tests/test_jwt_secret_hardening.py"],
+  "success_rate": {"backend": "100% (36/36)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Created 2 TEST users (test_jwt_*@example.com), 1 incident and 2 ioc_lookups. All were deleted by id afterwards. The seeded user debug-blue@example.com was only used to log in and was not modified.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run with: export EXPO_PUBLIC_BACKEND_URL=$(grep EXPO_PUBLIC_BACKEND_URL /app/frontend/.env | cut -d= -f2); pytest /app/backend/tests/test_jwt_secret_hardening.py /app/backend/tests/test_batch_ioc_and_timeline.py. The frontend env key is EXPO_PUBLIC_BACKEND_URL, not EXPO_BACKEND_URL."
+}

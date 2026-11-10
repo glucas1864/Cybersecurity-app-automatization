@@ -144,7 +144,9 @@ class IocBatchRequest(BaseModel):
     notes: Optional[str] = None
 
 
-JWT_SECRET = os.getenv("JWT_SECRET", "soc-sentinel-local-secret-change-me-32")
+JWT_SECRET = os.environ.get("JWT_SECRET", "")
+if len(JWT_SECRET) < 32:
+    raise RuntimeError("JWT_SECRET must be set in backend/.env with at least 32 characters")
 JWT_ALGORITHM = "HS256"
 AI_MODEL = "gpt-5.6-terra"
 
