@@ -39,3 +39,8 @@ Aplicativo móvel para analistas de cyber segurança (blue team), com triagem op
 1. Validate IOC + report flows with the Expo testing agent.
 2. Configure a real corporate SSO provider when tenant/client details are available.
 3. Add analyst roles and organization-level incident sharing.
+
+## Iteration 4 (edge-case hardening)
+- Checklist items store done_at; timeline shows one event per completed step at its real time; created event uses initial_severity
+- IOC: case-insensitive hxxp + dedup (domains/hashes/emails/URL host), 999.1.1.1 no longer a domain, IPv6 support, 400-char per-item limit, safe_int everywhere, semaphore(4) on enrichment, deterministic batch order (batch_index)
+- Checklist unknown item -> 404

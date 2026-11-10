@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import ipaddress
 import json
 import logging
 import os
@@ -9,9 +10,10 @@ import uuid
 from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Annotated, Any, List, Optional
 
 import bcrypt
+import httpx
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Header
 from dotenv import load_dotenv
 from emergentintegrations.llm.chat import ImageContent, LlmChat, StreamDone, TextDelta, UserMessage
@@ -137,6 +139,11 @@ class IocRequest(BaseModel):
     notes: Optional[str] = None
 
 
+class IocBatchRequest(BaseModel):
+    indicators: List[Annotated[str, Field(max_length=400)]] = Field(min_length=1, max_length=50)
+    notes: Optional[str] = None
+
+
 JWT_SECRET = os.getenv("JWT_SECRET", "soc-sentinel-local-secret-change-me-32")
 JWT_ALGORITHM = "HS256"
 AI_MODEL = "gpt-5.6-terra"
@@ -176,6 +183,7 @@ def incident_payload(title: str, source: str, description: str, raw_logs: str, u
         "status": "open",
         "severity": "yellow",
         "severity_label": "Revisar",
+        "initial_severity": "yellow",
         "analysis": None,
         "report": "",
         "report_draft": "",
@@ -259,7 +267,7 @@ O rascunho precisa incluir escopo, evidências citadas, hipoteses e proximos pas
         classification = "yellow"
     result["classification"] = classification
     result["classification_label"] = result.get("classification_label") or {"green": "Normal", "yellow": "Revisar", "red": "Suspeito"}[classification]
-    result["confidence"] = max(0, min(100, int(result.get("confidence", 50))))
+    result["confidence"] = max(0, min(100, safe_int(result.get("confidence"), 50)))
     result["findings"] = result.get("findings") if isinstance(result.get("findings"), list) else []
     result["next_steps"] = result.get("next_steps") if isinstance(result.get("next_steps"), list) else []
     return result
@@ -368,10 +376,13 @@ async def toggle_checklist(incident_id: str, item_id: str, user: dict[str, Any] 
     if not incident:
         raise HTTPException(status_code=404, detail="Incidente não encontrado")
     checklist = incident.get("checklist", [])
-    for item in checklist:
-        if item["id"] == item_id:
-            item["done"] = not item.get("done", False)
-    await db.incidents.update_one({"id": incident_id}, {"$set": {"checklist": checklist, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    item = next((entry for entry in checklist if entry["id"] == item_id), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item do checklist não encontrado")
+    now = datetime.now(timezone.utc).isoformat()
+    item["done"] = not item.get("done", False)
+    item["done_at"] = now if item["done"] else None
+    await db.incidents.update_one({"id": incident_id}, {"$set": {"checklist": checklist, "updated_at": now}})
     return checklist
 
 
@@ -382,6 +393,27 @@ async def add_evidence(incident_id: str, request: EvidenceRequest, user: dict[st
     if not result.matched_count:
         raise HTTPException(status_code=404, detail="Incidente não encontrado")
     return evidence
+
+
+@api_router.get("/incidents/{incident_id}/timeline")
+async def incident_timeline(incident_id: str, user: dict[str, Any] = Depends(current_user)):
+    incident = await db.incidents.find_one({"id": incident_id, "owner_id": user["id"]}, {"_id": 0})
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incidente não encontrado")
+    events: list[dict[str, Any]] = [{"id": f"create-{incident['id']}", "kind": "created", "icon": "shield-plus-outline", "title": "Incidente registrado", "description": incident.get("title", ""), "severity": incident.get("initial_severity", "yellow"), "at": incident.get("created_at")}]
+    for item in incident.get("evidence", []):
+        events.append({"id": f"evidence-{item['id']}", "kind": "evidence", "icon": "note-text-outline", "title": item.get("kind") or "Evidência", "description": item.get("content", ""), "severity": None, "at": item.get("created_at")})
+    history = await db.analysis_history.find({"owner_id": user["id"], "incident_id": incident_id}, {"_id": 0}).sort("created_at", 1).to_list(50)
+    for entry in history:
+        analysis = entry.get("analysis") or {}
+        events.append({"id": f"analysis-{entry['id']}", "kind": "analysis", "icon": "robot-outline", "title": f"Análise IA · {analysis.get('classification_label', 'Classificação')}", "description": analysis.get("summary", ""), "severity": analysis.get("classification"), "at": entry.get("created_at")})
+    if incident.get("report_reviewed") and incident.get("reviewed_at"):
+        events.append({"id": f"review-{incident['id']}", "kind": "review", "icon": "clipboard-check-outline", "title": "Relatório revisado pelo analista", "description": "Marcado como revisado após edição manual.", "severity": None, "at": incident.get("reviewed_at")})
+    for item in incident.get("checklist", []):
+        if item.get("done"):
+            events.append({"id": f"checklist-{incident['id']}-{item['id']}", "kind": "checklist", "icon": "checkbox-marked-circle", "title": "Etapa do checklist concluída", "description": item.get("label", ""), "severity": None, "at": item.get("done_at") or incident.get("updated_at")})
+    events.sort(key=lambda event: event.get("at") or "")
+    return {"incident_id": incident_id, "events": events, "total": len(events)}
 
 
 @api_router.get("/library")
@@ -406,28 +438,147 @@ IOC_PATTERNS = [
     ("md5", re.compile(r"^[A-Fa-f0-9]{32}$")),
     ("email", re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")),
     ("url", re.compile(r"^https?://\S+$", re.IGNORECASE)),
-    ("domain", re.compile(r"^(?=.{4,253}$)(?!-)[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+$")),
+    ("domain", re.compile(r"^(?=.{4,253}$)(?!-)[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})*\.[A-Za-z][A-Za-z0-9-]{0,62}$")),
 ]
 
 
 def classify_ioc(value: str) -> str:
-    cleaned = value.strip().replace("[.]", ".").replace("(.)", ".")
+    cleaned = normalize_ioc(value)
+    with suppress(ValueError):
+        if ipaddress.ip_address(cleaned).version == 6:
+            return "ipv6"
     for kind, pattern in IOC_PATTERNS:
         if pattern.match(cleaned):
             return kind
     return "unknown"
 
 
+def safe_int(value: Any, fallback: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        digits = re.findall(r"\d+", str(value or ""))
+        return int(digits[0]) if digits else fallback
+
+
+def normalize_ioc(value: str) -> str:
+    value = value.strip().replace("[.]", ".").replace("(.)", ".").replace("[:]", ":")
+    return re.sub(r"^hxxp", "http", value, flags=re.IGNORECASE)
+
+
+def canonical_ioc(value: str, kind: str) -> str:
+    """Case-insensitive form used for dedup: hosts, hashes and e-mails are not case-sensitive."""
+    if kind in {"domain", "email", "md5", "sha1", "sha256", "ipv6"}:
+        return value.lower()
+    if kind == "url":
+        match = re.match(r"^([A-Za-z]+://[^/?#]+)(.*)$", value)
+        return match.group(1).lower() + match.group(2) if match else value
+    return value
+
+
+def vt_resource(kind: str, indicator: str) -> Optional[tuple[str, str]]:
+    if kind in {"ipv4", "ipv6"}:
+        return "ip_addresses", indicator
+    if kind == "domain":
+        return "domains", indicator
+    if kind == "url":
+        return "urls", base64.urlsafe_b64encode(indicator.encode()).decode().rstrip("=")
+    if kind in {"md5", "sha1", "sha256"}:
+        return "files", indicator.lower()
+    return None
+
+
+async def vt_enrich(client: httpx.AsyncClient, kind: str, indicator: str) -> dict[str, Any]:
+    api_key = os.getenv("VIRUSTOTAL_API_KEY", "").strip()
+    if not api_key:
+        return {"status": "not_configured"}
+    resource = vt_resource(kind, indicator)
+    if not resource:
+        return {"status": "not_applicable", "reason": "VirusTotal não suporta este tipo"}
+    try:
+        response = await client.get(f"https://www.virustotal.com/api/v3/{resource[0]}/{resource[1]}", headers={"x-apikey": api_key, "accept": "application/json"})
+    except (httpx.TimeoutException, httpx.HTTPError) as exc:
+        logging.getLogger(__name__).warning("vt lookup error: %s", exc)
+        return {"status": "error", "error": "network_or_timeout"}
+    if response.status_code == 404:
+        return {"status": "not_found"}
+    if response.status_code in (401, 403):
+        return {"status": "error", "error": "invalid_or_unauthorized_key"}
+    if response.status_code == 429:
+        return {"status": "error", "error": "rate_limited"}
+    if response.status_code >= 400:
+        return {"status": "error", "error": f"http_{response.status_code}"}
+    attrs = response.json().get("data", {}).get("attributes", {})
+    stats = attrs.get("last_analysis_stats") or {}
+    return {
+        "status": "ok",
+        "malicious": stats.get("malicious", 0),
+        "suspicious": stats.get("suspicious", 0),
+        "harmless": stats.get("harmless", 0),
+        "undetected": stats.get("undetected", 0),
+        "reputation": attrs.get("reputation"),
+        "asn": attrs.get("asn"),
+        "country": attrs.get("country"),
+        "last_analysis_date": attrs.get("last_analysis_date"),
+    }
+
+
+async def abuse_enrich(client: httpx.AsyncClient, kind: str, indicator: str) -> dict[str, Any]:
+    if kind not in {"ipv4", "ipv6"}:
+        return {"status": "not_applicable", "reason": "AbuseIPDB avalia apenas IPs"}
+    api_key = os.getenv("ABUSEIPDB_API_KEY", "").strip()
+    if not api_key:
+        return {"status": "not_configured"}
+    try:
+        response = await client.get("https://api.abuseipdb.com/api/v2/check", params={"ipAddress": indicator, "maxAgeInDays": 90}, headers={"Key": api_key, "Accept": "application/json"})
+    except (httpx.TimeoutException, httpx.HTTPError) as exc:
+        logging.getLogger(__name__).warning("abuseipdb lookup error: %s", exc)
+        return {"status": "error", "error": "network_or_timeout"}
+    if response.status_code in (401, 403):
+        return {"status": "error", "error": "invalid_or_unauthorized_key"}
+    if response.status_code == 429:
+        return {"status": "error", "error": "rate_limited"}
+    if response.status_code >= 400:
+        return {"status": "error", "error": f"http_{response.status_code}"}
+    data = response.json().get("data", {})
+    return {
+        "status": "ok",
+        "abuse_score": data.get("abuseConfidenceScore"),
+        "total_reports": data.get("totalReports"),
+        "distinct_users": data.get("numDistinctUsers"),
+        "country": data.get("countryCode"),
+        "country_name": data.get("countryName"),
+        "usage_type": data.get("usageType"),
+        "isp": data.get("isp"),
+        "domain": data.get("domain"),
+        "last_reported_at": data.get("lastReportedAt"),
+    }
+
+
+async def enrich_ioc(kind: str, indicator: str) -> dict[str, Any]:
+    if kind == "ipv4":
+        try:
+            ipaddress.ip_address(indicator)
+        except ValueError:
+            return {"virustotal": {"status": "error", "error": "invalid_ip"}, "abuseipdb": {"status": "error", "error": "invalid_ip"}}
+    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+        vt, abuse = await asyncio.gather(vt_enrich(client, kind, indicator), abuse_enrich(client, kind, indicator))
+    return {"virustotal": vt, "abuseipdb": abuse}
+
+
 async def run_ioc_lookup(indicator: str, ioc_type: str, notes: Optional[str]) -> dict[str, Any]:
     api_key = configured_ai_key()
     if not api_key:
         raise HTTPException(status_code=503, detail="Agente de IA não configurado")
+    enrichment = await enrich_ioc(ioc_type, indicator)
+    enrichment_hint = json.dumps(enrichment, ensure_ascii=True)[:1500]
     prompt = llm_safe_text(f"""Avalie o indicador de comprometimento abaixo para um analista blue team.
 Retorne SOMENTE JSON valido com as chaves: classification (green|yellow|red), classification_label, confidence (0-100), summary, hypotheses (array de strings), recommended_checks (array de strings), enrichment_sources (array de strings).
-Nunca prometa certeza absoluta; destaque hipoteses e passos de validacao.
+Use os dados reais de enriquecimento abaixo (VirusTotal/AbuseIPDB) quando status=ok. Nunca prometa certeza absoluta; destaque hipoteses e passos de validacao.
 Tipo detectado: {ioc_type}
 Indicador: {indicator}
-Notas do analista: {notes or 'nenhuma'}""")
+Notas do analista: {notes or 'nenhuma'}
+Enriquecimento externo: {enrichment_hint}""")
     chat = LlmChat(api_key=api_key, session_id=f"ioc-{uuid.uuid4()}", system_message="You are a SOC analyst assistant that helps triage IOCs without inventing evidence.").with_model("openai", AI_MODEL)
     answer = []
     async for event in chat.stream_message(UserMessage(text=prompt)):
@@ -441,15 +592,47 @@ Notas do analista: {notes or 'nenhuma'}""")
         classification = "yellow"
     result["classification"] = classification
     result["classification_label"] = result.get("classification_label") or {"green": "Baixo risco", "yellow": "Investigar", "red": "Alto risco"}[classification]
-    result["confidence"] = max(0, min(100, int(result.get("confidence", 50))))
+    result["confidence"] = max(0, min(100, safe_int(result.get("confidence"), 50)))
     for key in ("hypotheses", "recommended_checks", "enrichment_sources"):
         result[key] = result.get(key) if isinstance(result.get(key), list) else []
+    result["enrichment"] = enrichment
     return result
+
+
+ENRICH_SEMAPHORE = asyncio.Semaphore(4)  # caps concurrent external calls so free-tier rate limits are not exhausted
+
+
+def rule_based_ioc_grade(kind: str, enrichment: dict[str, Any]) -> dict[str, Any]:
+    """Fast, LLM-free classification used by bulk lookups to stay within provider budget."""
+    vt = enrichment.get("virustotal", {})
+    abuse = enrichment.get("abuseipdb", {})
+    malicious = safe_int(vt.get("malicious"), 0) if vt.get("status") == "ok" else 0
+    suspicious = safe_int(vt.get("suspicious"), 0) if vt.get("status") == "ok" else 0
+    abuse_score = safe_int(abuse.get("abuse_score"), 0) if abuse.get("status") == "ok" else 0
+    tone = "green"
+    reasons: list[str] = []
+    if malicious >= 5 or abuse_score >= 75:
+        tone = "red"
+    elif malicious >= 1 or suspicious >= 2 or abuse_score >= 25:
+        tone = "yellow"
+    if vt.get("status") == "ok":
+        reasons.append(f"VirusTotal: {malicious} malicious / {suspicious} suspicious")
+    elif vt.get("status") == "not_configured":
+        reasons.append("VirusTotal não configurado")
+    if abuse.get("status") == "ok":
+        reasons.append(f"AbuseIPDB: score {abuse_score}")
+    elif abuse.get("status") == "not_configured" and kind in {"ipv4", "ipv6"}:
+        reasons.append("AbuseIPDB não configurado")
+    if kind == "unknown":
+        tone = "yellow"
+        reasons.append("Tipo de indicador não reconhecido")
+    label = {"green": "Baixo risco", "yellow": "Investigar", "red": "Alto risco"}[tone]
+    return {"classification": tone, "classification_label": label, "reasons": reasons}
 
 
 @api_router.post("/ioc/lookup")
 async def ioc_lookup(request: IocRequest, user: dict[str, Any] = Depends(current_user)):
-    cleaned = request.indicator.strip().replace("[.]", ".").replace("(.)", ".")
+    cleaned = normalize_ioc(request.indicator)
     if not cleaned:
         raise HTTPException(status_code=400, detail="Informe um indicador")
     ioc_type = classify_ioc(cleaned)
@@ -460,9 +643,44 @@ async def ioc_lookup(request: IocRequest, user: dict[str, Any] = Depends(current
     return {"indicator": cleaned, "ioc_type": ioc_type, "created_at": now, "requires_manual_review": True, **result}
 
 
+@api_router.post("/ioc/lookup/batch")
+async def ioc_lookup_batch(request: IocBatchRequest, user: dict[str, Any] = Depends(current_user)):
+    pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for raw in request.indicators:
+        value = normalize_ioc(raw)
+        if not value:
+            continue
+        kind = classify_ioc(value)
+        value = canonical_ioc(value, kind)
+        if value not in seen:
+            seen.add(value)
+            pairs.append((value, kind))
+    if not pairs:
+        raise HTTPException(status_code=400, detail="Nenhum indicador válido informado")
+
+    async def throttled(kind: str, value: str) -> dict[str, Any]:
+        async with ENRICH_SEMAPHORE:
+            return await enrich_ioc(kind, value)
+
+    enrichments = await asyncio.gather(*[throttled(kind, value) for value, kind in pairs])
+    now = datetime.now(timezone.utc).isoformat()
+    items = []
+    bulk_docs = []
+    for index, ((value, kind), enrichment) in enumerate(zip(pairs, enrichments)):
+        grade = rule_based_ioc_grade(kind, enrichment)
+        item = {"indicator": value, "ioc_type": kind, "classification": grade["classification"], "classification_label": grade["classification_label"], "reasons": grade["reasons"], "enrichment": enrichment, "created_at": now}
+        items.append(item)
+        bulk_docs.append({"id": str(uuid.uuid4()), "owner_id": user["id"], "indicator": value, "ioc_type": kind, "notes": request.notes or "", "result": {**item, "confidence": 60, "hypotheses": [], "recommended_checks": [], "enrichment_sources": ["VirusTotal", "AbuseIPDB"], "summary": "; ".join(grade["reasons"])}, "created_at": now, "batch": True, "batch_index": index})
+    if bulk_docs:
+        await db.ioc_lookups.insert_many(bulk_docs)
+    totals = {tone: sum(1 for i in items if i["classification"] == tone) for tone in ("green", "yellow", "red")}
+    return {"created_at": now, "totals": totals, "items": items, "requires_manual_review": True}
+
+
 @api_router.get("/ioc/history")
 async def ioc_history(user: dict[str, Any] = Depends(current_user)):
-    return await db.ioc_lookups.find({"owner_id": user["id"]}, {"_id": 0}).sort("created_at", -1).limit(50).to_list(50)
+    return await db.ioc_lookups.find({"owner_id": user["id"]}, {"_id": 0}).sort([("created_at", -1), ("batch_index", 1)]).limit(50).to_list(50)
 
 @api_router.post("/status", response_model=StatusCheck)
 async def create_status_check(input: StatusCheckCreate):

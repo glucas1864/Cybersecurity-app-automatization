@@ -1,0 +1,42 @@
+{
+  "summary": "Backend-only test of the new features: POST /api/ioc/lookup/batch, enrichment in the single POST /api/ioc/lookup, and GET /api/incidents/{id}/timeline, plus regression checks on health and login. 17/17 pytest tests pass. The batch endpoint is rule-based and fast (5 items took about 1s, 50 items worked fine). Enrichment correctly returns not_configured / not_applicable with the VT and AbuseIPDB keys unset. Dedup, 422 for an empty list, 400 for a list that is empty after cleanup, and 422 for more than 50 items all work, and history shows batch items newest first. The single lookup still uses the LLM and now includes enrichment. The timeline returns created/evidence/checklist/analysis/review events sorted ascending, with all required fields, and returns 404 to other users and 401 without a token. Edge probes found these issues: the checklist event timestamp is wrong, dedup and hxxp normalization are case-sensitive, 999.1.1.1 is classified as a green domain, and there is no per-indicator length limit.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/incidents/{id}/timeline", "issue": "The checklist event's 'at' uses incident.updated_at, so it moves whenever the incident changes later (evidence, analysis, review). Reproduced: toggled checklist at 12:14:26, added evidence at 12:14:28, and the timeline showed the checklist at 12:14:28, after the evidence. This gives the wrong time and order. Fix: store done_at on each checklist item when toggled and emit events from that."},
+      {"endpoint": "GET /api/incidents/{id}/timeline", "issue": "The 'created' event severity is the incident's current severity, which analysis overwrites, not the severity when it was created. It can show red on the creation event."},
+      {"endpoint": "POST /api/ioc/lookup/batch", "issue": "Dedup is case-sensitive: ['Example.com','example.com','EXAMPLE[.]COM'] gives 3 items. The same happens for MD5/SHA hashes in upper vs lower case. Fix: lowercase domains, hashes and the URL scheme/host before dedup."},
+      {"endpoint": "normalize_ioc (server.py:458)", "issue": "Defanged hxxp is only replaced in lower case: 'HXXP://bad.com' is classified as 'unknown'. Fix: use a case-insensitive regex."},
+      {"endpoint": "classify_ioc / IOC_PATTERNS (server.py:437)", "issue": "Invalid IPs like '999.1.1.1' match the domain regex and come back as domain/green (Baixo risco). Fix: reject all-numeric labels as domains, or flag them invalid. IPv6 ('::1') is also unsupported and returns unknown."},
+      {"endpoint": "POST /api/ioc/lookup/batch", "issue": "There is no per-indicator length limit. A 20000-char string was accepted and stored, while the single lookup allows at most 400. Fix: use List[constr(max_length=400)]."},
+      {"endpoint": "rule_based_ioc_grade (server.py:590)", "issue": "Latent crash: abuse_enrich can return abuse_score=None (data.get('abuseConfidenceScore')), and then 'None >= 75' raises TypeError and gives a 500 once the AbuseIPDB key is set. The same risk applies to VT malicious/suspicious. Fix: wrap them with safe_int(..., 0)."},
+      {"endpoint": "POST /api/ioc/lookup/batch", "issue": "With keys configured, 50 indicators trigger up to 100 concurrent external calls. The VT free tier allows 4 requests/min, so most items would come back rate_limited. Fix: add an asyncio.Semaphore or throttle."},
+      {"endpoint": "POST /api/incidents/{id}/analyze (server.py:269)", "issue": "run_ai_analysis still uses int(result.get('confidence', 50)) instead of the new safe_int helper. An LLM reply like '85%' would raise a 500."},
+      {"endpoint": "POST /api/incidents/{id}/checklist/{item_id}", "issue": "An unknown item_id returns 200 with nothing changed, but it should return 404 (existing behaviour, minor)."},
+      {"endpoint": "GET /api/ioc/history", "issue": "All items in a batch share the same created_at, so their order within the batch is not deterministic."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": [], "react_native_issues": []},
+  "test_report_links": ["/app/backend/tests/test_batch_ioc_and_timeline.py", "/app/backend/tests/probe_iter3_edges.py", "/app/test_reports/pytest/pytest_iteration_3.xml"],
+  "action_items": [
+    "Timeline: store a done_at timestamp per checklist item and use it for the checklist event instead of incident.updated_at",
+    "Batch: dedup case-insensitively (lowercase domains, hashes and URL hosts), and make hxxp/[.] defang normalization case-insensitive",
+    "Do not classify invalid dotted-numeric strings (999.1.1.1) as green domains",
+    "Add max_length=400 per item in IocBatchRequest.indicators",
+    "Use safe_int in rule_based_ioc_grade for abuse_score/malicious/suspicious, and in run_ai_analysis confidence (line 269)",
+    "Throttle concurrent enrichment calls in batch (semaphore) so the VT/AbuseIPDB rate limits are not exhausted once keys are configured",
+    "Optional: return 404 for an unknown checklist item_id"
+  ],
+  "critical_code_review_comments": [
+    "server.py is 697 lines, close to the 700-line limit. Consider splitting the IOC/enrichment code into its own module.",
+    "AI_MODEL is hardcoded, and JWT_SECRET has a hardcoded fallback default (should come from env and fail fast).",
+    "Created-event severity in the timeline reflects the current state, not the historical one."
+  ],
+  "updated_files": ["/app/backend/tests/test_batch_ioc_and_timeline.py", "/app/backend/tests/probe_iter3_edges.py"],
+  "success_rate": {"backend": "100% (17/17 tests); 11 minor issues found by edge probes", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Under debug-blue@example.com: TEST_timeline incidents (with evidence, analysis, review) and IOC lookups (5-item batch with notes TEST_batch, 50x 10.0.1.x, 8.8.8.8, 1.1.1.1, example.com variants, etc.). There is no delete API and ids were not tracked, so they were not cleaned up. Also created one TEST_other user (test_other_*@example.com).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "The env var for the backend URL is EXPO_PUBLIC_BACKEND_URL (not EXPO_BACKEND_URL) in /app/frontend/.env. pytest.ini forces -n 2 --dist loadscope. Run: cd /app/backend && python -m pytest tests/test_batch_ioc_and_timeline.py -v. Single lookup and analyze use the LLM (about 5-15s each).",
+  "rca_of_issue": "Checklist timeline timestamp: incident_timeline builds the checklist event with at=incident['updated_at'], and add_evidence/analyze/review all overwrite updated_at, so the checklist event moves to the time of the latest change."
+}
