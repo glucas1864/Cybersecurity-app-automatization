@@ -1,0 +1,168 @@
+{
+  "app_name": "SOC Sentinel Blue",
+  "personality": "7 Dark-First Utility DARK",
+  "personality_one_liner": "An operational command-center mobile app for cybersecurity blue team analysts featuring real-time triage, traffic-light log classification, and incident reports with human review.",
+  "color": {
+    "surface": "#0B1220",
+    "onSurface": "#F8FAFC",
+    "surfaceSecondary": "#131E31",
+    "onSurfaceSecondary": "#E2E8F0",
+    "surfaceTertiary": "#1E293B",
+    "onSurfaceTertiary": "#94A3B8",
+    "surfaceInverse": "#F1F5F9",
+    "onSurfaceInverse": "#0F172A",
+    "brand": "#3B82F6",
+    "brandPrimary": "#3B82F6",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#1D4ED8",
+    "onBrandSecondary": "#DBEAFE",
+    "brandTertiary": "#172554",
+    "onBrandTertiary": "#93C5FD",
+    "success": "#10B981",
+    "onSuccess": "#022C22",
+    "warning": "#F59E0B",
+    "onWarning": "#451A03",
+    "error": "#EF4444",
+    "onError": "#450A0A",
+    "info": "#06B6D4",
+    "onInfo": "#083344",
+    "border": "#1E293B",
+    "borderStrong": "#334155",
+    "divider": "#1E293B",
+    "muted": "#64748B",
+    "onBrand": "#FFFFFF"
+  },
+  "typography": {
+    "displayFontFamily": "Barlow Condensed",
+    "textFontFamily": "IBM Plex Sans",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Generous vertical padding, single-column security cards with consistent 16px margins, sticky action bottom bar with glass effect.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": "1",
+  "navigation": "bottom_tabs",
+  "icon_set": "MaterialCommunityIcons",
+  "glassmorphism": {
+    "enabled": true,
+    "do's": [
+      "Apply translucent frosted glass to sticky bottom nav and incident action headers",
+      "Ensure solid 80% tint on glass surfaces over scrolling logs"
+    ],
+    "dont's": [
+      "Never blur body text or interactive IOC input fields",
+      "Avoid glass overlays on dense traffic light log tables"
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Auth",
+      "purpose": "Corporate SSO/Google or email/senha authentication with secure session state",
+      "states": {
+        "loading": "Authenticating enterprise credentials...",
+        "empty": "Please enter corporate SSO credentials",
+        "error": "Authentication failed. Verify token or password."
+      },
+      "layout": "Centered secure card layout with biometric toggle and corporate login button."
+    },
+    {
+      "name": "Dashboard",
+      "purpose": "Overview of active SOC incidents, severity distribution, and rapid alert queues",
+      "states": {
+        "loading": "Syncing telemetry feeds...",
+        "empty": "No active incidents reported in perimeter.",
+        "error": "Failed to poll SIEM aggregator. Tap to retry."
+      },
+      "layout": "Scrollable metrics grid, high-priority incident cards, and quick action toolbar."
+    },
+    {
+      "name": "Incident Triage",
+      "purpose": "Detailed incident analysis with traffic-light log classification (Green/Yellow/Red)",
+      "states": {
+        "loading": "Parsing event logs and running heuristic checks...",
+        "empty": "No logs imported for triage.",
+        "error": "Log parse error. Check syntax and retry."
+      },
+      "layout": "Interactive log viewer with color-coded severity badges and human review sign-off panel."
+    },
+    {
+      "name": "Checklist & IOCs",
+      "purpose": "Step-by-step incident response playbook and fast lookup for Indicators of Compromise",
+      "states": {
+        "loading": "Loading threat intel database...",
+        "empty": "No IOCs registered for this incident.",
+        "error": "Threat feed offline. Using local cache."
+      },
+      "layout": "Tabbed workspace with interactive checklist items and instant IOC search bar."
+    },
+    {
+      "name": "Evidence & Reports",
+      "purpose": "Secure evidence logging, analyst notes, and editable incident report generation with human review",
+      "states": {
+        "loading": "Compiling evidence bundle...",
+        "empty": "No evidence entries logged yet.",
+        "error": "Failed to export report."
+      },
+      "layout": "Timeline view of evidence with Markdown notes and editable report preview."
+    },
+    {
+      "name": "Cyber Library",
+      "purpose": "Educational cybersecurity modules, adversary tactics, and mitigation playbooks for review",
+      "states": {
+        "loading": "Loading security modules...",
+        "empty": "No study articles available.",
+        "error": "Could not sync curriculum."
+      },
+      "layout": "Card-based learning modules with search filter and bookmarking."
+    },
+    {
+      "name": "Settings",
+      "purpose": "Theme toggle (dark SOC vs light mode), API integrations, and notification preferences",
+      "states": {
+        "loading": "Loading preferences...",
+        "empty": "No settings configured.",
+        "error": "Failed to save settings."
+      },
+      "layout": "Structured settings list with theme switcher and integration status indicators."
+    }
+  ],
+  "images": {
+    "soc_hero": {
+      "url": "https://images.unsplash.com/photo-1551288049-bebda4e38f71?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MTN8MHwxfHNlYXJjaHwxfHxjeWJlcnNlY3VyaXR5JTIwb3BlcmF0aW9ucyUyMGNlbnRlciUyMGRhc2hib2FyZCUyMGRhcmslMjBpbnRlcmZhY2V8ZW58MHx8fHwxNzk0MjE5OTk2fDA&ixlib=rb-4.1.0&q=85",
+      "dark": "https://images.unsplash.com/photo-1551288049-bebda4e38f71?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MTN8MHwxfHNlYXJjaHwxfHxjeWJlcnNlY3VyaXR5JTIwb3BlcmF0aW9ucyUyMGNlbnRlciUyMGRhc2hib2FyZCUyMGRhcmslMjBpbnRlcmZhY2V8ZW58MHx8fHwxNzk0MjE5OTk2fDA&ixlib=rb-4.1.0&q=85",
+      "alt": "SOC command center dashboard dark interface"
+    }
+  },
+  "instructions_to_main_agent": "Ensure all screens adhere to the Dark-First Utility theme with cobalt/blue accents (#3B82F6) and high-contrast accessibility. All log classifications must use the green/yellow/red traffic light indicator. Incident reports require explicit manual analyst review before export. Support theme toggle between dark SOC mode and light mode."
+}
